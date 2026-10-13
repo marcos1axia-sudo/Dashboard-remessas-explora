@@ -181,8 +181,8 @@ def calcular_diferencas(df: pd.DataFrame) -> pd.DataFrame:
 
     df["Dias envio_notificacao"] = abs((df["DATA_NTI_PGTO"] - df["DATA_ENVIO"]).dt.days)
     df["Dias notificacao_pagamento"] = abs((df["DATA_PGTO_PREP"] - df["DATA_NTI_PGTO"]).dt.days)
-    df["Dias pagamento_inicio_preparacao"] = abs((df["DATA_RECBTO"] - df["DATA_PGTO_PREP"]).dt.days)
-    df["Dias inicio_preparacao_finalizacao"] = abs((df["DATA_REPORTE"] - df["DATA_RECBTO"]).dt.days)
+    df["Dias pagamento_inicio_preparacao"] = abs((df["DATA_INIC"] - df["DATA_PGTO_PREP"]).dt.days)
+    df["Dias inicio_preparacao_finalizacao"] = abs((df["DATA_REPORTE"] - df["DATA_INIC"]).dt.days)
 
     # Dias sempre como inteiros (Int64 aceita vazios/NaN sem virar float)
     for col in COLS_DIFF:
@@ -983,7 +983,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-    
