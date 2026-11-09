@@ -105,13 +105,54 @@ def formatar_datas_para_exibicao(df: pd.DataFrame) -> pd.DataFrame:
 # ==============================================================================
 # 1. CARGA E PREPARAÇÃO DOS DADOS
 # ==============================================================================
+# Colunas sem as quais o dashboard não consegue calcular as etapas
+COLUNAS_OBRIGATORIAS = [
+    "REMESSA",
+    "DATA_ENVIO",
+    "DATA_NTI_PGTO",
+    "DATA_PGTO_PREP",
+    "DATA_INIC",
+    "DATA_REPORTE",
+]
+
+
+def ler_planilha_remessas(arquivo) -> pd.DataFrame:
+    """
+    Lê a primeira aba do Excel localizando automaticamente a linha de
+    cabeçalho (a primeira linha, entre as 20 iniciais, que contém "REMESSA"
+    e "DATA_ENVIO"). Assim o app funciona mesmo que a planilha ganhe ou perca
+    linhas de legenda acima da tabela.
+    """
+    previa = pd.read_excel(arquivo, header=None, nrows=20)
+    linha_cabecalho = None
+    for i, linha in previa.iterrows():
+        valores = {str(v).strip() for v in linha.dropna()}
+        if {"REMESSA", "DATA_ENVIO"} <= valores:
+            linha_cabecalho = i
+            break
+    if linha_cabecalho is None:
+        raise ValueError(
+            'não encontrei a linha de cabeçalho (com "REMESSA" e "DATA_ENVIO") '
+            "nas 20 primeiras linhas da primeira aba."
+        )
+
+    if hasattr(arquivo, "seek"):
+        arquivo.seek(0)
+    df = pd.read_excel(arquivo, header=linha_cabecalho)
+    df.columns = [str(c).strip() for c in df.columns]
+    # Descarta linhas totalmente vazias e sem número de remessa
+    df = df.dropna(how="all")
+    df = df[df["REMESSA"].notna()].reset_index(drop=True)
+    return df
+
+
 def carregar_df() -> pd.DataFrame:
     """
     Ponto de entrada dos dados reais.
 
     O dashboard NUNCA gera dados fictícios: ele só trabalha com um arquivo
-    Excel enviado pelo próprio usuário na tela (upload), lido com o mesmo
-    parâmetro usado fora do dashboard (header na linha 5, índice 4).
+    Excel enviado pelo próprio usuário na tela (upload). A linha de cabeçalho
+    é localizada automaticamente (ver `ler_planilha_remessas`).
     """
     st.sidebar.header("📁 Arquivo de Dados")
     arquivo_enviado = st.sidebar.file_uploader(
@@ -122,9 +163,17 @@ def carregar_df() -> pd.DataFrame:
 
     if arquivo_enviado is not None:
         try:
-            df_raw = pd.read_excel(arquivo_enviado, header=4)
+            df_raw = ler_planilha_remessas(arquivo_enviado)
         except Exception as e:
             st.error(f"Não foi possível ler o arquivo enviado: {e}")
+            st.stop()
+
+        faltantes = [c for c in COLUNAS_OBRIGATORIAS if c not in df_raw.columns]
+        if faltantes:
+            st.error(
+                "O arquivo enviado não tem a(s) coluna(s) obrigatória(s): "
+                f"{', '.join(faltantes)}. Confira se é a planilha de controle de remessas."
+            )
             st.stop()
         st.session_state["df_original"] = df_raw
         st.session_state["nome_arquivo"] = arquivo_enviado.name
