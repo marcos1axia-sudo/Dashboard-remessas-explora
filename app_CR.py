@@ -11,11 +11,6 @@ das remessas em cada etapa do fluxo:
 Requisitos:
     pip install streamlit pandas plotly openpyxl xlsxwriter
 
-    IMPORTANTE: o recurso de clique no gráfico (drill-down) usa o parâmetro
-    `on_select` do `st.plotly_chart`, disponível a partir do Streamlit 1.35.
-    Se estiver usando uma versão mais antiga, atualize com:
-        pip install -U streamlit
-
 Execução:
     streamlit run app_CR.py
 
@@ -53,7 +48,6 @@ ETAPAS = {
     "Dias inicio_preparacao_finalizacao": "Início da Preparação → Finalização",
 }
 COLS_DIFF = list(ETAPAS.keys())
-NOME_ETAPA_FINAL = "Início da Preparação → Finalização"
 
 COLUNAS_DATA = [
     "DATA_ENVIO",
@@ -64,8 +58,6 @@ COLUNAS_DATA = [
     "DATA_PGTO_PREP",
     "DATA_INIC",
     "DATA_PGTO_ENSAIO",
-    "DATA_FNZ_PREP",       # Fim da preparação (usado no drill-down)
-    "DATA_INC_ANALISE",    # Início da análise (usado no drill-down)
 ]
 
 # Cores fixas por etapa (usadas em todos os gráficos p/ consistência visual)
@@ -454,17 +446,13 @@ def criar_grafico_media_etapas(df: pd.DataFrame, rush_opcao: str) -> go.Figure:
 
 
 # ==============================================================================
-# 5. GRÁFICO 2 — BARRAS EMPILHADAS POR REMESSA (com destaque de RUSH e clique)
+# 5. GRÁFICO 2 — BARRAS EMPILHADAS POR REMESSA (com destaque de RUSH)
 # ==============================================================================
 def criar_grafico_remessas(df_pagina: pd.DataFrame) -> go.Figure:
     """
     Colunas verticais empilhadas: uma coluna por remessa (já paginado
     externamente — ver `main()`). Remessas marcadas como RUSH ("Sim") ganham
     o número em verde e negrito no eixo x.
-
-    Cada segmento de barra carrega `customdata` com o número da REMESSA, de
-    forma que um clique no segmento "Início da Preparação → Finalização"
-    possa disparar o drill-down (ver `main()`).
     """
     df_g = df_pagina
 
@@ -491,7 +479,6 @@ def criar_grafico_remessas(df_pagina: pd.DataFrame) -> go.Figure:
                 y=dias,
                 name=nome,
                 marker_color=CORES_ETAPAS[nome],
-                customdata=df_g["REMESSA"].tolist(),
                 text=[str(d) if d > 0 else "" for d in dias],
                 textposition="inside",
                 insidetextanchor="middle",
@@ -532,85 +519,82 @@ def criar_grafico_remessas(df_pagina: pd.DataFrame) -> go.Figure:
 
 
 # ==============================================================================
-# 6. DRILL-DOWN — DETALHE DA ETAPA "INÍCIO DA PREPARAÇÃO → FINALIZAÇÃO"
+# 6. GRÁFICO 3 — LINHA: TOTAL DE DIAS POR REMESSA AO LONGO DO TEMPO
 # ==============================================================================
-def calcular_drilldown(df: pd.DataFrame, remessa: str) -> dict:
+def criar_grafico_linha_tempo(
+    df: pd.DataFrame, limite_atencao: int, limite_critico: int
+) -> go.Figure:
     """
-    Para a remessa clicada, calcula:
-        - dias1: DATA_FNZ_PREP  -> DATA_INC_ANALISE  (fim da preparação até início da análise)
-        - dias2: DATA_INC_ANALISE -> DATA_REPORTE     (início da análise até a finalização)
+    Gráfico de linha com o total de dias (Dias_total) de cada remessa
+    finalizada, posicionada no eixo x pela data de finalização (DATA_REPORTE).
+
+    - Cada ponto é uma remessa (hover mostra número, data e total de dias).
+    - Remessas RUSH aparecem como marcador verde (losango).
+    - Linha tracejada com a média móvel das últimas 5 remessas (tendência).
+    - Linhas horizontais com os limites de atenção e crítico da barra lateral.
     """
-    colunas_necessarias = ["DATA_FNZ_PREP", "DATA_INC_ANALISE", "DATA_REPORTE"]
-    faltantes = [c for c in colunas_necessarias if c not in df.columns]
-    if faltantes:
-        return {"erro": f"Coluna(s) ausente(s) na base: {', '.join(faltantes)}"}
+    df_l = df.dropna(subset=["DATA_REPORTE"]).sort_values("DATA_REPORTE").copy()
+    df_l["Dias_total"] = df_l["Dias_total"].astype(int)
+    df_l["Media_movel"] = df_l["Dias_total"].rolling(window=5, min_periods=1).mean()
 
-    linhas = df[df["REMESSA"] == remessa]
-    if linhas.empty:
-        return {"erro": f"Remessa {remessa} não encontrada nos dados filtrados."}
+    eh_rush = (df_l["RUSH"] == "Sim") if "RUSH" in df_l.columns else pd.Series(False, index=df_l.index)
+    rush_txt = np.where(eh_rush, "Sim", "Não")
+    customdata = np.column_stack([df_l["REMESSA"].astype(str), rush_txt])
 
-    row = linhas.iloc[0]
-    fnz_prep = row["DATA_FNZ_PREP"]
-    inc_analise = row["DATA_INC_ANALISE"]
-    reporte = row["DATA_REPORTE"]
-
-    dias1 = abs((inc_analise - fnz_prep).days) if pd.notna(fnz_prep) and pd.notna(inc_analise) else None
-    dias2 = abs((reporte - inc_analise).days) if pd.notna(inc_analise) and pd.notna(reporte) else None
-
-    return {
-        "remessa": remessa,
-        "dias1": dias1,
-        "dias2": dias2,
-        "fnz_prep": fnz_prep,
-        "inc_analise": inc_analise,
-        "reporte": reporte,
-    }
-
-
-def criar_grafico_drilldown(detalhe: dict) -> go.Figure:
-    """Diagrama simples com os dois sub-intervalos calculados em `calcular_drilldown`."""
-    rotulos = ["Fim Preparação → Início Análise", "Início Análise → Finalização"]
-    valores = [detalhe["dias1"], detalhe["dias2"]]
-    textos = [f"{v} dias" if v is not None else "Sem dados" for v in valores]
-    valores_plot = [v if v is not None else 0 for v in valores]
-
-    fig = go.Figure(
-        go.Bar(
-            x=rotulos,
-            y=valores_plot,
-            text=textos,
-            textposition="outside",
-            marker_color=["#F58518", "#72B7B2"],
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df_l["DATA_REPORTE"],
+            y=df_l["Dias_total"],
+            mode="lines+markers",
+            name="Total de dias",
+            line=dict(color="#4C78A8", width=2),
+            marker=dict(
+                size=np.where(eh_rush, 11, 7),
+                color=np.where(eh_rush, "green", "#4C78A8"),
+                symbol=np.where(eh_rush, "diamond", "circle"),
+                line=dict(color="white", width=1),
+            ),
+            customdata=customdata,
+            hovertemplate=(
+                "<b>Remessa %{customdata[0]}</b><br>"
+                "Finalização: %{x|%d/%m/%Y}<br>"
+                "Total: %{y} dias<br>"
+                "RUSH: %{customdata[1]}<extra></extra>"
+            ),
         )
     )
+    fig.add_trace(
+        go.Scatter(
+            x=df_l["DATA_REPORTE"],
+            y=df_l["Media_movel"],
+            mode="lines",
+            name="Média móvel (5 remessas)",
+            line=dict(color="#F58518", width=2, dash="dash"),
+            hovertemplate="Média móvel: %{y:.0f} dias<extra></extra>",
+        )
+    )
+
+    fig.add_hline(
+        y=limite_atencao, line_dash="dot", line_color="#E8B300",
+        annotation_text=f"Atenção ({limite_atencao} dias)", annotation_position="top left",
+    )
+    fig.add_hline(
+        y=limite_critico, line_dash="dot", line_color="#E45756",
+        annotation_text=f"Crítico ({limite_critico} dias)", annotation_position="top left",
+    )
+
     fig.update_layout(
-        height=380,
-        yaxis_title="Dias",
-        xaxis_title="",
-        margin=dict(t=30, b=10),
-        title=f"Detalhamento da etapa final — Remessa {detalhe['remessa']}",
+        height=450,
+        xaxis_title="Data de finalização (DATA_REPORTE)",
+        yaxis_title="Total de dias",
+        yaxis_tickformat="d",
+        xaxis_tickformat="%d/%m/%Y",
+        hovermode="closest",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=40, b=10),
     )
     return fig
-
-
-def exibir_drilldown(df_filtrado: pd.DataFrame) -> None:
-    """Renderiza o painel de detalhamento quando uma remessa foi clicada."""
-    remessa_sel = st.session_state.get("remessa_drilldown")
-    if not remessa_sel:
-        return
-
-    st.markdown("---")
-    st.subheader(f"🔬 Detalhamento — Etapa Final da Remessa {remessa_sel}")
-
-    detalhe = calcular_drilldown(df_filtrado, remessa_sel)
-    if "erro" in detalhe:
-        st.warning(detalhe["erro"])
-    else:
-        st.plotly_chart(criar_grafico_drilldown(detalhe), width="stretch")
-
-    if st.button("✖️ Fechar detalhamento", key="fechar_drilldown"):
-        st.session_state["remessa_drilldown"] = None
-        st.rerun()
 
 
 # ==============================================================================
@@ -864,9 +848,7 @@ def main():
     st.markdown("---")
     st.subheader("📈 Tempo de Processamento por Remessa")
     st.caption(
-        "Número da remessa em **verde** no eixo x = remessa marcada como RUSH. "
-        "Clique no segmento **Início da Preparação → Finalização** de uma remessa "
-        "para ver o detalhamento dessa etapa."
+        "Número da remessa em **verde** no eixo x = remessa marcada como RUSH."
     )
 
     df_ordenado = df_filtrado.dropna(subset=["DATA_REPORTE"]).sort_values(
@@ -905,41 +887,24 @@ def main():
 
         fig_remessas = criar_grafico_remessas(df_pagina)
 
-        evento = st.plotly_chart(
-            fig_remessas,
-            width='stretch',
-            on_select="rerun",
-            selection_mode="points",
-            key="grafico_remessas",
+        st.plotly_chart(fig_remessas, width="stretch")
+
+    # --- Gráfico 3: Linha com total de dias por remessa ao longo do tempo ---
+    st.markdown("---")
+    st.subheader("📉 Total de Dias por Remessa ao Longo do Tempo")
+    st.caption(
+        "Cada ponto é uma remessa finalizada, posicionada pela data de finalização "
+        "(DATA_REPORTE). Losango **verde** = RUSH. A linha tracejada laranja mostra a "
+        "média móvel das últimas 5 remessas; as linhas pontilhadas são os limites de "
+        "atenção e crítico definidos na barra lateral."
+    )
+    if total_remessas == 0:
+        st.info("Nenhuma remessa finalizada (com DATA_REPORTE) para exibir.")
+    else:
+        st.plotly_chart(
+            criar_grafico_linha_tempo(df_filtrado, limite_atencao, limite_critico),
+            width="stretch",
         )
-
-        # --- Captura do clique para disparar o drill-down ---
-        try:
-            selecao = evento["selection"] if isinstance(evento, dict) else evento.selection
-            pontos = selecao["points"] if isinstance(selecao, dict) else selecao.points
-        except Exception:
-            pontos = []
-
-        etapas_ordem = list(ETAPAS.values())
-        for ponto in pontos or []:
-            curva = ponto.get("curve_number") if isinstance(ponto, dict) else getattr(ponto, "curve_number", None)
-            customdata = ponto.get("customdata") if isinstance(ponto, dict) else getattr(ponto, "customdata", None)
-            if curva is not None and curva < len(etapas_ordem) and etapas_ordem[curva] == NOME_ETAPA_FINAL:
-                if customdata is not None:
-                    # Dependendo da versão do Streamlit/Plotly, `customdata` do
-                    # ponto pode vir como lista/tupla (["037"]) ou já como o
-                    # valor escalar (037) — tratamos os dois casos.
-                    if isinstance(customdata, (list, tuple)):
-                        remessa_clicada = customdata[0] if len(customdata) > 0 else None
-                    else:
-                        remessa_clicada = customdata
-
-                    if remessa_clicada is not None:
-                        st.session_state["remessa_drilldown"] = remessa_clicada
-                        st.rerun()
-
-    # --- Painel de drill-down (se alguma remessa foi clicada) ---
-    exibir_drilldown(df_filtrado)
 
     # --- Remessas em andamento (não finalizadas) ---
     exibir_remessas_em_andamento(df_filtrado)
